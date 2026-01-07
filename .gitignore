@@ -1,0 +1,12 @@
+.DS_Store
+.build/
+build/
+*.bin
+*.elf
+*.hex
+*.map
+*.uf2
+
+# Local credentials. Copy secrets.example.h to secrets.h before compiling.
+secrets.h
+
