@@ -1,3 +1,5 @@
+// Wi-Fi provisioning and local web interface.
+
 bool connectWiFiWithRetries(uint8_t maxAttempts);
 String htmlEscape(const String& input);
 int buildSsidOptionsFromScanCount(int n, String& ssidOptions);
@@ -28,6 +30,13 @@ void handleSensorCodeEvent(
   bool applyDuplicateFilter,
   const String& source
 );
+
+String buildProvisioningApSsid() {
+  uint64_t chipId = ESP.getEfuseMac();
+  char suffix[7];
+  snprintf(suffix, sizeof(suffix), "%06X", static_cast<uint32_t>(chipId & 0xFFFFFF));
+  return String(WIFI_AP_SSID_PREFIX) + "-" + suffix;
+}
 
 void ensureWiFiConnected() {
   if (wifiProvisioningMode) return;
@@ -2243,7 +2252,7 @@ void processWebServer() {
 void startProvisioningApMode() {
   if (wifiProvisioningMode) return;
 
-  wifiProvisionApSsid = WIFI_AP_SSID;
+  wifiProvisionApSsid = buildProvisioningApSsid();
   wifiScanOptionsCache = "";
   wifiScanCacheMs = 0;
   wifiScanStartedMs = 0;
@@ -2338,4 +2347,3 @@ void startProvisioningApMode() {
   Serial.print("Open: http://");
   Serial.println(WiFi.softAPIP());
 }
-

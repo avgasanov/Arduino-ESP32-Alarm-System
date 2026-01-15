@@ -92,7 +92,7 @@ static constexpr uint16_t COOPERATIVE_DELAY_SLICE_MS = 20;
 static constexpr const char* STATE_FILE = "/alarm_state.json";
 static constexpr const char* WIFI_CONFIG_FILE = "/wifi_config.json";
 static constexpr const char* PUSH_EVENT_ROUTE = "/api/alarm/events";
-static constexpr const char* WIFI_AP_SSID = "AlarmSetup";
+static constexpr const char* WIFI_AP_SSID_PREFIX = "AlarmSetup";
 static constexpr const char* WIFI_AP_PASSWORD = "alarmsetup";
 static constexpr const char* WEB_SESSION_COOKIE = "ALARMSESSID";
 static constexpr const char* WEB_CHAT_PREFIX = "web:";
@@ -284,4 +284,3 @@ class FlagScope {
 
 void processWebServer();
 void pollTelegram();
-

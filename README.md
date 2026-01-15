@@ -80,7 +80,7 @@ On boot, the device tries the credentials from SPIFFS first, then `secrets.h`.
 
 If Wi-Fi cannot connect after the configured retries, it starts a setup access point:
 
-- AP SSID: `AlarmSetup`
+- AP SSID: `AlarmSetup-<chip-suffix>`
 - AP password: `alarmsetup`
 - Setup page: `http://192.168.4.1`
 
@@ -174,4 +174,3 @@ System:
 - Config export includes operational configuration and may include Wi-Fi/router settings. Treat exported JSON as private.
 - Telegram TLS validation is disabled with `setInsecure()` to keep the ESP32 flow simple. Use a pinned certificate or trust anchor before relying on it in a high-security deployment.
 - The SMS integration is router and firmware specific. Test with a harmless SMS before enabling alarm alerts.
-
