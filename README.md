@@ -39,6 +39,18 @@ Board package:
 
 The project uses the ESP32 huge app partition profile in `sketch.yaml`.
 
+## Project Layout
+
+- `Arduino_ESP32_Alarm_System.ino` - includes, constants, data structures, and global state.
+- `01_CoreUtilities.ino` - common helpers, cooperative delay, and performance logging.
+- `02_RouterSms.ino` - TL-MR100 login/encryption flow and SMS delivery.
+- `03_StateAndMessaging.ino` - SPIFFS state, config import/export, and Telegram send helpers.
+- `04_RfPushStatus.ino` - RF transmit, push events, and status/list text builders.
+- `05_WebInterface.ino` - Wi-Fi provisioning and local web UI/API.
+- `06_TelegramCommands.ino` - command parser and command handlers.
+- `07_Runtime.ino` - RF receive, bark detector, `setup()`, and `loop()`.
+- `secrets.example.h` - safe template for local credentials.
+
 ## Wiring
 
 RF receiver:

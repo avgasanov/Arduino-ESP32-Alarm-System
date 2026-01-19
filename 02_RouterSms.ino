@@ -1,3 +1,5 @@
+// Direct SMS support for router-backed LTE modems.
+
 bool isSmsRouterSupported(const String& routerId) {
   return routerId == SMS_ROUTER_TL_MR100;
 }
@@ -985,4 +987,3 @@ void maybeSendSmsAlert(
     addWebEvent("[SMS] failed: " + summary + " | " + err);
   }
 }
-

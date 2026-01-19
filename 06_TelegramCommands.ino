@@ -1,3 +1,5 @@
+// Telegram command parsing and command handlers shared with the web UI.
+
 void handleCommand(const String& chatId, String text) {
   String rawText = text;
   text = normalizeSpaces(text);
@@ -1087,4 +1089,3 @@ void pollTelegram() {
     logSlowOperation("tg poll loop handled=" + String(handled), pollTookMs, PERF_SLOW_OP_LOG_MS);
   }
 }
-

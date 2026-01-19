@@ -1,3 +1,5 @@
+// Shared helpers, cooperative delays, and lightweight performance logging.
+
 void logSlowOperation(const String& name, unsigned long tookMs, uint16_t thresholdMs = PERF_SLOW_OP_LOG_MS) {
   if (tookMs < thresholdMs) return;
   unsigned long now = millis();
@@ -75,4 +77,3 @@ bool isBarkSource(const String& source) {
 
 bool parseUInt32(const String& text, uint32_t& out);
 void addWebEvent(const String& text);
-

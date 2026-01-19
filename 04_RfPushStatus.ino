@@ -1,3 +1,5 @@
+// RF transmit helpers, push events, and text builders for status screens.
+
 void sendRfSignal(uint32_t code, uint8_t bits, uint8_t repeats = 6) {
   BusyScope busy("rf_send");
   unsigned long startMs = millis();
@@ -477,4 +479,3 @@ String buildGroupsList() {
   if (!any) msg += "(none)\n";
   return msg;
 }
-

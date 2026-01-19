@@ -1,3 +1,5 @@
+// Runtime event processing for RF, bark detection, setup, and loop.
+
 void handleSensorCodeEvent(
   uint32_t code,
   uint8_t bits,

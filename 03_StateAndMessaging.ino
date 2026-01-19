@@ -1,3 +1,5 @@
+// SPIFFS persistence, config import/export, auth state, and message helpers.
+
 bool readFileString(const char* path, String& out) {
   out = "";
   if (!SPIFFS.exists(path)) return false;
@@ -988,4 +990,3 @@ bool applyImportedConfig(const String& payload, String& err) {
   clearRuntimeState();  // runtime listeners are always volatile
   return true;
 }
-
