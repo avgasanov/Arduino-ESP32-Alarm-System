@@ -284,3 +284,11 @@ class FlagScope {
 
 void processWebServer();
 void pollTelegram();
+
+#include "Module01_CoreUtilities.h"
+#include "Module02_RouterSms.h"
+#include "Module03_StateAndMessaging.h"
+#include "Module04_RfPushStatus.h"
+#include "Module05_WebInterface.h"
+#include "Module06_TelegramCommands.h"
+#include "Module07_Runtime.h"
