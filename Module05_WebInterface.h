@@ -334,7 +334,7 @@ String webLoginPageHtml() {
 }
 
 String webAppPageHtml() {
-  return R"APP_HTML(
+  String page = R"APP_HTML(
 <!doctype html>
 <html>
 <head>
@@ -704,6 +704,7 @@ String webAppPageHtml() {
     let logSeq = 0;
     let overview = null;
     let smsPhones = [];
+    let smsPhonesDirty = false;
     const learnCandidates = {};
     const remoteLearnCandidates = {};
     let logsPollInFlight = false;
@@ -711,6 +712,7 @@ String webAppPageHtml() {
     let statusPollInFlight = false;
 
     const byId = (id) => document.getElementById(id);
+    const editableSelector = 'input, select, textarea';
     const statusEl = byId('statusText');
     const logsEl = byId('logs');
     const learnRawEl = byId('learnRaw');
@@ -771,6 +773,46 @@ String webAppPageHtml() {
       el.className = 'chip ' + cls;
     };
 
+    const isEditableElement = (el) => !!(el && el.matches && el.matches(editableSelector));
+    const markDirty = (el) => {
+      if (isEditableElement(el)) el.dataset.dirty = '1';
+    };
+    const clearDirtyIds = (ids) => {
+      ids.forEach((id) => {
+        const el = byId(id);
+        if (el) delete el.dataset.dirty;
+      });
+    };
+    const shouldPreserveField = (el, preserveEdits) => {
+      return !!(preserveEdits && el && (document.activeElement === el || el.dataset.dirty === '1'));
+    };
+    const sectionHasEdits = (el, preserveEdits) => {
+      if (!preserveEdits || !el) return false;
+      const active = document.activeElement;
+      if (active && el.contains(active) && isEditableElement(active)) return true;
+      return !!el.querySelector('[data-dirty="1"]');
+    };
+    const setValueFromOverview = (id, value, preserveEdits) => {
+      const el = byId(id);
+      if (!el || shouldPreserveField(el, preserveEdits)) return;
+      el.value = String(value == null ? '' : value);
+    };
+    const setCheckedFromOverview = (id, checked, preserveEdits) => {
+      const el = byId(id);
+      if (!el || shouldPreserveField(el, preserveEdits)) return;
+      el.checked = !!checked;
+    };
+    const hasEditedField = (ids, preserveEdits) => {
+      return !!(preserveEdits && ids.some((id) => shouldPreserveField(byId(id), true)));
+    };
+    const smsFieldIds = [
+      'smsRouterId', 'smsFirmwareId', 'smsHost', 'smsPhoneAdd', 'smsPassword',
+      'smsEnabled', 'smsSavedMode', 'smsGroupMode', 'smsSensorMode'
+    ];
+
+    document.addEventListener('input', (ev) => markDirty(ev.target));
+    document.addEventListener('change', (ev) => markDirty(ev.target));
+
     const showPage = (name) => {
       const pages = ['dashboard', 'groups', 'sensors', 'remotes', 'wol', 'system', 'learning'];
       pages.forEach((p) => {
@@ -794,6 +836,7 @@ String webAppPageHtml() {
 
     const postAction = async (action, fields = {}, options = {}) => {
       const silent = !!options.silent;
+      const preserveEdits = options.preserveEdits !== false;
       const body = new URLSearchParams();
       body.set('action', action);
       Object.keys(fields).forEach((k) => {
@@ -806,7 +849,9 @@ String webAppPageHtml() {
         body: body.toString()
       });
       if (data.reply && !silent) flash(data.reply, false);
-      if (data.overview) renderOverview(data.overview);
+      if (Array.isArray(options.clearDirtyIds)) clearDirtyIds(options.clearDirtyIds);
+      if (options.clearSmsPhonesDirty) smsPhonesDirty = false;
+      if (data.overview && !options.skipOverviewRender) renderOverview(data.overview, { preserveEdits });
       return data;
     };
 
@@ -901,7 +946,8 @@ String webAppPageHtml() {
       `).join('');
     };
 
-    const renderStatusSummary = (ov) => {
+    const renderStatusSummary = (ov, options = {}) => {
+      const preserveEdits = options.preserveEdits !== false;
       metaEl.textContent = (ov.wifi_connected ? 'WiFi connected' : 'WiFi disconnected') + ' | IP: ' + (ov.ip || '-') + ' | SSID: ' + (ov.ssid || '-');
       setChip(chipSavedEl, 'Saved mode: ' + (ov.listen_saved_armed ? 'ARMED' : 'DISARMED'), ov.listen_saved_armed ? 'warn' : 'ok');
       setChip(chipAllEl, 'Listen-all clients: ' + (ov.runtime_listen_all_count || 0), (ov.runtime_listen_all_count || 0) > 0 ? 'warn' : 'ok');
@@ -914,66 +960,70 @@ String webAppPageHtml() {
       setChip(chipRemotesEl, 'Remotes: ' + (ov.remote_total || 0));
       statusEl.textContent = ov.status_text || '';
 
-      toggleListenAllEl.checked = !!ov.session_listen_all_enabled;
-      toggleLearningListenEl.checked = !!ov.session_listen_all_enabled;
-      toggleSavedModeEl.checked = !!ov.listen_saved_armed;
-      toggleBarkEl.checked = !!ov.bark_enabled;
+      setCheckedFromOverview('toggleListenAll', !!ov.session_listen_all_enabled, preserveEdits);
+      setCheckedFromOverview('toggleLearningListen', !!ov.session_listen_all_enabled, preserveEdits);
+      setCheckedFromOverview('toggleSavedMode', !!ov.listen_saved_armed, preserveEdits);
+      setCheckedFromOverview('toggleBark', !!ov.bark_enabled, preserveEdits);
     };
 
-    const renderOverview = (ov) => {
+    const renderOverview = (ov, options = {}) => {
+      const preserveEdits = options.preserveEdits !== false;
       overview = ov;
-      renderStatusSummary(ov);
-      renderGroups(ov.groups_all || []);
-      renderSensors(ov.sensors_flat || []);
-      renderRemotes(ov.remotes || []);
+      renderStatusSummary(ov, { preserveEdits });
+      if (!sectionHasEdits(groupsEl, preserveEdits)) renderGroups(ov.groups_all || []);
+      if (!sectionHasEdits(sensorsRowsEl, preserveEdits)) renderSensors(ov.sensors_flat || []);
+      if (!sectionHasEdits(remotesRowsEl, preserveEdits)) renderRemotes(ov.remotes || []);
 
       const push = ov.push_server || {};
       const bark = ov.bark || {};
       const sms = ov.sms || {};
-      byId('pushHost').value = push.host || '';
-      byId('pushPort').value = String(push.port || 8080);
-      byId('pushHttps').checked = !!push.https;
-      byId('pushEnabled').checked = !!push.enabled;
+      setValueFromOverview('pushHost', push.host || '', preserveEdits);
+      setValueFromOverview('pushPort', push.port || 8080, preserveEdits);
+      setCheckedFromOverview('pushHttps', !!push.https, preserveEdits);
+      setCheckedFromOverview('pushEnabled', !!push.enabled, preserveEdits);
 
       const routers = sms.compatible_routers || [];
       const firmwares = sms.supported_firmwares || [];
       const routerSel = byId('smsRouterId');
       const fwSel = byId('smsFirmwareId');
+      const preserveSms = preserveEdits && (smsPhonesDirty || hasEditedField(smsFieldIds, true));
 
-      if (routers.length) {
+      if (!preserveSms && routers.length) {
         routerSel.innerHTML = routers.map((r) =>
           '<option value="' + esc(r.id) + '">' + esc(r.name || r.id) + '</option>'
         ).join('');
-      } else if (!routerSel.innerHTML.trim()) {
+      } else if (!preserveSms && !routerSel.innerHTML.trim()) {
         routerSel.innerHTML = '<option value="tl-mr100">TP-Link TL-MR100</option>';
       }
 
-      if (firmwares.length) {
+      if (!preserveSms && firmwares.length) {
         fwSel.innerHTML = firmwares.map((f) =>
           '<option value="' + esc(f.id) + '">' + esc(f.name || f.id) + '</option>'
         ).join('');
-      } else if (!fwSel.innerHTML.trim()) {
+      } else if (!preserveSms && !fwSel.innerHTML.trim()) {
         fwSel.innerHTML = '<option value="mr100-gdpr-v1">GDPR encrypted web API v1</option>';
       }
 
-      routerSel.value = sms.router_id || routerSel.value || 'tl-mr100';
-      fwSel.value = sms.firmware_id || fwSel.value || 'mr100-gdpr-v1';
-      byId('smsEnabled').checked = !!sms.enabled;
-      byId('smsSavedMode').checked = sms.saved_mode_enabled !== false;
-      byId('smsGroupMode').checked = sms.group_mode_enabled !== false;
-      byId('smsSensorMode').checked = sms.sensor_mode_enabled !== false;
-      byId('smsHost').value = sms.router_host || '192.168.0.1';
-      smsPhones = Array.isArray(sms.recipient_phones) ? sms.recipient_phones.slice(0, 5) : [];
-      if (!smsPhones.length && sms.recipient_phone) smsPhones = [sms.recipient_phone];
-      renderSmsPhones();
-      if (sms.router_password_set !== true) byId('smsPassword').value = '';
+      if (!preserveSms) {
+        routerSel.value = sms.router_id || routerSel.value || 'tl-mr100';
+        fwSel.value = sms.firmware_id || fwSel.value || 'mr100-gdpr-v1';
+        setCheckedFromOverview('smsEnabled', !!sms.enabled, false);
+        setCheckedFromOverview('smsSavedMode', sms.saved_mode_enabled !== false, false);
+        setCheckedFromOverview('smsGroupMode', sms.group_mode_enabled !== false, false);
+        setCheckedFromOverview('smsSensorMode', sms.sensor_mode_enabled !== false, false);
+        setValueFromOverview('smsHost', sms.router_host || '192.168.0.1', false);
+        smsPhones = Array.isArray(sms.recipient_phones) ? sms.recipient_phones.slice(0, 5) : [];
+        if (!smsPhones.length && sms.recipient_phone) smsPhones = [sms.recipient_phone];
+        renderSmsPhones();
+        if (sms.router_password_set !== true) setValueFromOverview('smsPassword', '', false);
+      }
 
-      byId('barkModeAdv').value = bark.mode || 'do';
-      byId('barkDoLevelAdv').value = String(bark.do_active_level != null ? bark.do_active_level : 0);
-      byId('barkThresholdAdv').value = String(bark.threshold != null ? bark.threshold : 3000);
-      byId('barkCooldownAdv').value = String(bark.cooldown_ms != null ? bark.cooldown_ms : 7000);
-      byId('barkCodeAdv').value = String(bark.code != null ? bark.code : 7654321);
-      byId('barkEmitRfAdv').checked = !!bark.emit_rf;
+      setValueFromOverview('barkModeAdv', bark.mode || 'do', preserveEdits);
+      setValueFromOverview('barkDoLevelAdv', bark.do_active_level != null ? bark.do_active_level : 0, preserveEdits);
+      setValueFromOverview('barkThresholdAdv', bark.threshold != null ? bark.threshold : 3000, preserveEdits);
+      setValueFromOverview('barkCooldownAdv', bark.cooldown_ms != null ? bark.cooldown_ms : 7000, preserveEdits);
+      setValueFromOverview('barkCodeAdv', bark.code != null ? bark.code : 7654321, preserveEdits);
+      setCheckedFromOverview('barkEmitRfAdv', !!bark.emit_rf, preserveEdits);
     };
 
     const ingestLearnCandidate = (text) => {
@@ -1058,23 +1108,23 @@ String webAppPageHtml() {
       `).join('');
     };
 
-    const loadOverview = async () => {
+    const loadOverview = async (options = {}) => {
       if (overviewLoadInFlight) return;
       overviewLoadInFlight = true;
       try {
         const data = await api('/api/overview');
-        renderOverview(data.overview || {});
+        renderOverview(data.overview || {}, options);
       } finally {
         overviewLoadInFlight = false;
       }
     };
 
-    const loadStatusSummary = async () => {
+    const loadStatusSummary = async (options = {}) => {
       if (statusPollInFlight) return;
       statusPollInFlight = true;
       try {
         const data = await api('/api/status');
-        renderStatusSummary(data.status || {});
+        renderStatusSummary(data.status || {}, options);
       } catch (e) {
       } finally {
         statusPollInFlight = false;
@@ -1103,21 +1153,41 @@ String webAppPageHtml() {
     };
 
     const setListenAll = async (enabled) => {
-      try { await postAction('listen_all_set', { enabled: enabled ? 1 : 0 }); } catch (e) { flash(e.message, true); }
+      try {
+        await postAction('listen_all_set', { enabled: enabled ? 1 : 0 }, {
+          clearDirtyIds: ['toggleListenAll', 'toggleLearningListen'],
+          preserveEdits: false
+        });
+      } catch (e) { flash(e.message, true); }
     };
 
     const setSavedMode = async (enabled) => {
-      try { await postAction('listen_saved_set', { enabled: enabled ? 1 : 0 }); } catch (e) { flash(e.message, true); }
+      try {
+        await postAction('listen_saved_set', { enabled: enabled ? 1 : 0 }, {
+          clearDirtyIds: ['toggleSavedMode'],
+          preserveEdits: false
+        });
+      } catch (e) { flash(e.message, true); }
     };
 
     const setBark = async (enabled) => {
-      try { await postAction('bark_set', { enabled: enabled ? 1 : 0 }); } catch (e) { flash(e.message, true); }
+      try {
+        await postAction('bark_set', { enabled: enabled ? 1 : 0 }, {
+          clearDirtyIds: ['toggleBark'],
+          preserveEdits: false
+        });
+      } catch (e) { flash(e.message, true); }
     };
 
     const saveGroup = async (id) => {
       const name = byId('group-name-' + id).value.trim();
       const armed = byId('group-arm-' + id).checked;
-      try { await postAction('group_save', { group: id, name, armed: armed ? 1 : 0 }); } catch (e) { flash(e.message, true); }
+      try {
+        await postAction('group_save', { group: id, name, armed: armed ? 1 : 0 }, {
+          clearDirtyIds: ['group-name-' + id, 'group-arm-' + id],
+          preserveEdits: false
+        });
+      } catch (e) { flash(e.message, true); }
     };
 
     const resetGroup = async (id) => {
@@ -1130,7 +1200,12 @@ String webAppPageHtml() {
       const name = byId('groupNameNew').value.trim();
       const armed = byId('groupArmedNew').checked;
       if (!group) return flash('Group ID is required', true);
-      try { await postAction('group_save', { group, name, armed: armed ? 1 : 0 }); } catch (e) { flash(e.message, true); }
+      try {
+        await postAction('group_save', { group, name, armed: armed ? 1 : 0 }, {
+          clearDirtyIds: ['groupIdNew', 'groupNameNew', 'groupArmedNew'],
+          preserveEdits: false
+        });
+      } catch (e) { flash(e.message, true); }
     };
 
     const resetGroupNew = async () => {
@@ -1143,7 +1218,12 @@ String webAppPageHtml() {
       const name = byId('sensor-name-' + code).value.trim();
       const group = byId('sensor-group-' + code).value.trim();
       const notify = byId('sensor-notify-' + code).checked ? 'on' : 'off';
-      try { await postAction('sensor_upsert', { code, group, name, notify }); } catch (e) { flash(e.message, true); }
+      try {
+        await postAction('sensor_upsert', { code, group, name, notify }, {
+          clearDirtyIds: ['sensor-name-' + code, 'sensor-group-' + code, 'sensor-notify-' + code],
+          preserveEdits: false
+        });
+      } catch (e) { flash(e.message, true); }
     };
 
     const removeSensor = async (code) => {
@@ -1157,13 +1237,23 @@ String webAppPageHtml() {
       const name = byId('sensorAddName').value.trim();
       const notify = byId('sensorAddNotify').checked ? 'on' : 'off';
       if (!code || !group) return flash('Sensor code and group are required', true);
-      try { await postAction('sensor_upsert', { code, group, name, notify }); } catch (e) { flash(e.message, true); }
+      try {
+        await postAction('sensor_upsert', { code, group, name, notify }, {
+          clearDirtyIds: ['sensorAddCode', 'sensorAddGroup', 'sensorAddName', 'sensorAddNotify'],
+          preserveEdits: false
+        });
+      } catch (e) { flash(e.message, true); }
     };
 
     const saveRemote = async (key) => {
       const code = byId('remote-code-' + key).value.trim();
       const bits = byId('remote-bits-' + key).value.trim();
-      try { await postAction('remote_upsert', { key, code, bits }); } catch (e) { flash(e.message, true); }
+      try {
+        await postAction('remote_upsert', { key, code, bits }, {
+          clearDirtyIds: ['remote-code-' + key, 'remote-bits-' + key],
+          preserveEdits: false
+        });
+      } catch (e) { flash(e.message, true); }
     };
 
     const sendRemote = async (key) => {
@@ -1180,7 +1270,12 @@ String webAppPageHtml() {
       const code = byId('remoteAddCode').value.trim();
       const bits = byId('remoteAddBits').value.trim();
       if (!key || !code) return flash('Remote key and code are required', true);
-      try { await postAction('remote_upsert', { key, code, bits }); } catch (e) { flash(e.message, true); }
+      try {
+        await postAction('remote_upsert', { key, code, bits }, {
+          clearDirtyIds: ['remoteAddKey', 'remoteAddCode', 'remoteAddBits'],
+          preserveEdits: false
+        });
+      } catch (e) { flash(e.message, true); }
     };
 
     const prefillLearnRemote = (code, bits) => {
@@ -1228,12 +1323,20 @@ String webAppPageHtml() {
       const enabled = byId('pushEnabled').checked;
 
       if (!enabled) {
-        try { await postAction('server_clear'); } catch (e) { flash(e.message, true); }
+        try {
+          await postAction('server_clear', {}, {
+            clearDirtyIds: ['pushHost', 'pushPort', 'pushHttps', 'pushEnabled'],
+            preserveEdits: false
+          });
+        } catch (e) { flash(e.message, true); }
         return;
       }
       if (!host) return flash('Push host is required when enabled', true);
       try {
-        await postAction('server_set', { host, port, https: https ? 1 : 0 });
+        await postAction('server_set', { host, port, https: https ? 1 : 0 }, {
+          clearDirtyIds: ['pushHost', 'pushPort', 'pushHttps', 'pushEnabled'],
+          preserveEdits: false
+        });
       } catch (e) {
         flash(e.message, true);
       }
@@ -1252,13 +1355,16 @@ String webAppPageHtml() {
       if (smsPhones.includes(phone)) return flash('Phone already added', true);
       if (smsPhones.length >= 5) return flash('Maximum 5 recipients allowed', true);
       smsPhones.push(phone);
+      smsPhonesDirty = true;
       input.value = '';
+      delete input.dataset.dirty;
       renderSmsPhones();
       flash('Phone added', false);
     };
 
     const removeSmsPhone = (phone) => {
       smsPhones = smsPhones.filter((p) => p !== phone);
+      smsPhonesDirty = true;
       renderSmsPhones();
     };
 
@@ -1285,6 +1391,10 @@ String webAppPageHtml() {
           router_host,
           router_password,
           recipient_phones: smsPhones.join(',')
+        }, {
+          clearDirtyIds: smsFieldIds.concat(['smsTestMessage']),
+          clearSmsPhonesDirty: true,
+          preserveEdits: false
         });
       } catch (e) {
         flash(e.message, true);
@@ -1311,13 +1421,21 @@ String webAppPageHtml() {
       if (!threshold || !cooldown || !code) return flash('Bark threshold, cooldown and code are required', true);
 
       try {
-        await postAction('bark_mode_set', { mode }, { silent: true });
-        await postAction('bark_do_level_set', { level }, { silent: true });
-        await postAction('bark_threshold_set', { value: threshold }, { silent: true });
-        await postAction('bark_cooldown_set', { value: cooldown }, { silent: true });
-        await postAction('bark_code_set', { value: code }, { silent: true });
-        await postAction('bark_emit_rf_set', { enabled: emit ? 1 : 0 }, { silent: true });
-        await loadOverview();
+        await postAction('bark_config_set', {
+          mode,
+          level,
+          threshold,
+          cooldown,
+          code,
+          emit_rf: emit ? 1 : 0
+        }, {
+          silent: true,
+          clearDirtyIds: [
+            'barkModeAdv', 'barkDoLevelAdv', 'barkThresholdAdv',
+            'barkCooldownAdv', 'barkCodeAdv', 'barkEmitRfAdv'
+          ],
+          preserveEdits: false
+        });
         flash('Bark settings saved', false);
       } catch (e) {
         flash(e.message, true);
@@ -1392,7 +1510,8 @@ String webAppPageHtml() {
         }
         const data = await res.json().catch(() => ({}));
         if (!res.ok || data.ok === false) throw new Error(data.error || 'Config import failed');
-        if (data.overview) renderOverview(data.overview);
+        smsPhonesDirty = false;
+        if (data.overview) renderOverview(data.overview, { preserveEdits: false });
         flash(data.reply || 'Config import applied', false);
       } catch (e) {
         flash(e.message, true);
@@ -1401,7 +1520,7 @@ String webAppPageHtml() {
 
     const resetAllData = async () => {
       if (!confirm('Reset all persistent data? This cannot be undone.')) return;
-      try { await postAction('reset_all'); } catch (e) { flash(e.message, true); }
+      try { await postAction('reset_all', {}, { preserveEdits: false, clearSmsPhonesDirty: true }); } catch (e) { flash(e.message, true); }
     };
 
     const addLearnSensor = async (code) => {
@@ -1458,13 +1577,17 @@ String webAppPageHtml() {
 
     loadOverview().catch((e) => flash('Overview error: ' + e.message, true));
     pollLogs();
-    setInterval(() => loadStatusSummary().catch(() => {}), 2500);
-    setInterval(() => loadOverview().catch(() => {}), 25000);
-    setInterval(pollLogs, 1800);
+    setInterval(() => loadStatusSummary().catch(() => {}), __WEB_STATUS_REFRESH_MS__);
+    setInterval(() => loadOverview().catch(() => {}), __WEB_OVERVIEW_REFRESH_MS__);
+    setInterval(pollLogs, __WEB_LOG_REFRESH_MS__);
   </script>
 </body>
 </html>
 )APP_HTML";
+  page.replace("__WEB_STATUS_REFRESH_MS__", String(WEB_STATUS_REFRESH_MS));
+  page.replace("__WEB_OVERVIEW_REFRESH_MS__", String(WEB_OVERVIEW_REFRESH_MS));
+  page.replace("__WEB_LOG_REFRESH_MS__", String(WEB_LOG_REFRESH_MS));
+  return page;
 }
 void sendWebJsonError(int code, const String& message) {
   DynamicJsonDocument doc(512);
@@ -1907,6 +2030,71 @@ void setupWebRoutes() {
       cmd = "/bark_on";
     } else if (action == "bark_off") {
       cmd = "/bark_off";
+    } else if (action == "bark_config_set") {
+      String mode = lowerCopy(provisionServer.arg("mode"));
+      String level = provisionServer.arg("level");
+      String emitText = lowerCopy(provisionServer.arg("emit_rf"));
+      uint16_t threshold = 0;
+      uint32_t cooldown = 0;
+      uint32_t code = 0;
+      uint8_t inputMode = BARK_MODE_DO;
+
+      mode.trim();
+      level.trim();
+      emitText.trim();
+
+      if (mode == "ao") inputMode = BARK_MODE_AO;
+      else if (mode == "do") inputMode = BARK_MODE_DO;
+      else if (mode == "both") inputMode = BARK_MODE_BOTH;
+      else {
+        sendWebJsonError(400, "Invalid bark mode.");
+        return;
+      }
+
+      if (!(level == "0" || level == "1")) {
+        sendWebJsonError(400, "Invalid bark do level.");
+        return;
+      }
+      if (!parseUInt16(provisionServer.arg("threshold"), threshold) || threshold > ADC_MAX_VALUE) {
+        sendWebJsonError(400, "Invalid bark threshold.");
+        return;
+      }
+      if (!parseUInt32(provisionServer.arg("cooldown"), cooldown) || cooldown < 500 || cooldown > 120000) {
+        sendWebJsonError(400, "Invalid bark cooldown.");
+        return;
+      }
+      if (!parseUInt32(provisionServer.arg("code"), code) || code == 0 || code > 16777215UL) {
+        sendWebJsonError(400, "Invalid bark code.");
+        return;
+      }
+
+      barkConfig.inputMode = inputMode;
+      barkConfig.doActiveLevel = static_cast<uint8_t>(level.toInt());
+      barkConfig.threshold = threshold;
+      barkConfig.cooldownMs = cooldown;
+      barkConfig.code = code;
+      barkConfig.emitRf = (emitText == "1" || emitText == "true" || emitText == "on");
+      if (!saveState()) {
+        sendWebJsonError(500, "Failed to save bark settings.");
+        return;
+      }
+
+      addWebEvent(
+        "[WEB_ACTION] bark_config_set mode=" + mode +
+        " doLevel=" + String(barkConfig.doActiveLevel) +
+        " threshold=" + String(barkConfig.threshold)
+      );
+
+      DynamicJsonDocument doc(WEB_OVERVIEW_DOC_CAPACITY);
+      doc["ok"] = true;
+      doc["reply"] = "Bark settings saved.";
+      fillOverviewJson(doc);
+      String webChatId = String(WEB_CHAT_PREFIX) + token;
+      doc["overview"]["session_listen_all_enabled"] = isRuntimeListenAllEnabledForChat(webChatId);
+      sendWebJsonOk(doc);
+      unsigned long took = millis() - t0;
+      if (took > 100) Serial.printf("[WEB] /api/action took %lums (%s)\n", took, action.c_str());
+      return;
     } else if (action == "bark_mode_set") {
       String mode = lowerCopy(provisionServer.arg("mode"));
       mode.trim();
