@@ -100,7 +100,7 @@ If Wi-Fi cannot connect after the configured retries, it starts a setup access p
 
 From there you can choose a router Wi-Fi network or continue in offline AP mode.
 
-## Main Commands
+## Telegram Commands
 
 Authentication:
 
