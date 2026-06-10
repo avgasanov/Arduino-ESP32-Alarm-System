@@ -22,6 +22,7 @@ void sendWebJsonError(int code, const String& message);
 void sendWebJsonOk(DynamicJsonDocument& doc);
 bool runWebCommandForSession(const String& sessionToken, const String& command, String& reply);
 void fillOverviewJson(DynamicJsonDocument& doc);
+void fillBarkLiveJson(JsonObject bark, bool includeCurrentReadings);
 void handleSensorCodeEvent(
   uint32_t code,
   uint8_t bits,
@@ -376,6 +377,12 @@ String webAppPageHtml() {
     .item { border:1px solid var(--line); border-radius:12px; padding:10px; background:#fcfdff; }
     .itemHead { display:flex; justify-content:space-between; align-items:center; gap:8px; margin-bottom:8px; }
     .title { font-weight:700; }
+    .meterGrid { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:8px; }
+    .meter { border:1px solid var(--line); border-radius:10px; background:#f8fbff; padding:8px; min-width:0; }
+    .meterValue { font-size:18px; line-height:1.15; font-weight:800; overflow:hidden; text-overflow:ellipsis; }
+    .livePanel { border:1px solid var(--line); border-radius:12px; background:#fcfdff; padding:10px; display:grid; gap:8px; }
+    .liveHead { display:flex; justify-content:space-between; align-items:flex-start; gap:8px; }
+    .liveGraph { width:100%; height:168px; display:block; border:1px solid #dbe5f0; border-radius:10px; background:#f8fbff; }
     .mutedTiny { color:var(--muted); font-size:12px; }
     .tableWrap { overflow:auto; border:1px solid var(--line); border-radius:10px; }
     table { width:100%; border-collapse:collapse; min-width:760px; font-size:13px; }
@@ -401,6 +408,9 @@ String webAppPageHtml() {
       .header { grid-template-columns: 1fr auto; align-items:center; }
       .grid { grid-template-columns: 1fr 1fr; }
       .row2 { grid-template-columns: 1.2fr 1fr; }
+    }
+    @media (max-width: 700px) {
+      .meterGrid { grid-template-columns:1fr 1fr; }
     }
   </style>
 </head>
@@ -658,6 +668,34 @@ String webAppPageHtml() {
             <label class="switch"><input id="barkEmitRfAdv" type="checkbox"><span class="slider"></span></label>
           </div>
         </div>
+        <div class="livePanel">
+          <div class="liveHead">
+            <div>
+              <div class="title">Live Sensor</div>
+              <div class="mutedTiny" id="barkLiveMeta">Waiting for readings...</div>
+            </div>
+            <span class="chip" id="barkLiveTrigger">DO -</span>
+          </div>
+          <canvas id="barkLiveGraph" class="liveGraph" width="720" height="168"></canvas>
+          <div class="meterGrid">
+            <div class="meter">
+              <div class="mutedTiny">AO now</div>
+              <div class="meterValue" id="barkLiveAo">-</div>
+            </div>
+            <div class="meter">
+              <div class="mutedTiny">DO now</div>
+              <div class="meterValue" id="barkLiveDo">-</div>
+            </div>
+            <div class="meter">
+              <div class="mutedTiny">Window peak</div>
+              <div class="meterValue" id="barkLivePeak">-</div>
+            </div>
+            <div class="meter">
+              <div class="mutedTiny">DO active</div>
+              <div class="meterValue" id="barkLiveDoPct">-</div>
+            </div>
+          </div>
+        </div>
         <div class="inline">
           <button class="btn" onclick="saveBarkAdvanced()">Save Bark Settings</button>
           <button class="btn secondary" onclick="runBarkTest()">Run Bark Test</button>
@@ -712,13 +750,18 @@ String webAppPageHtml() {
     let smsPhonesDirty = false;
     const learnCandidates = {};
     const remoteLearnCandidates = {};
+    const barkLiveHistory = [];
+    const barkLiveHistoryMax = 90;
+    let activePage = 'dashboard';
     let logsPollInFlight = false;
     let overviewLoadInFlight = false;
     let statusPollInFlight = false;
+    let barkLivePollInFlight = false;
     let flashTimer = null;
 
     const byId = (id) => document.getElementById(id);
     const editableSelector = 'input, select, textarea';
+    const adcMaxValue = __ADC_MAX_VALUE__;
     const actionProgressLabels = {
       listen_all_set: 'Updating listen-all...',
       listen_saved_set: 'Updating saved mode...',
@@ -748,6 +791,13 @@ String webAppPageHtml() {
     const learnListEl = byId('learnList');
     const remoteLearnListEl = byId('remoteLearnList');
     const smsPhonesListEl = byId('smsPhonesList');
+    const barkLiveGraphEl = byId('barkLiveGraph');
+    const barkLiveAoEl = byId('barkLiveAo');
+    const barkLiveDoEl = byId('barkLiveDo');
+    const barkLivePeakEl = byId('barkLivePeak');
+    const barkLiveDoPctEl = byId('barkLiveDoPct');
+    const barkLiveMetaEl = byId('barkLiveMeta');
+    const barkLiveTriggerEl = byId('barkLiveTrigger');
     const metaEl = byId('meta');
     const chipSavedEl = byId('chipSaved');
     const chipAllEl = byId('chipAll');
@@ -881,11 +931,13 @@ String webAppPageHtml() {
     document.addEventListener('change', (ev) => markDirty(ev.target));
 
     const showPage = (name) => {
+      activePage = name;
       const pages = ['dashboard', 'groups', 'sensors', 'remotes', 'wol', 'system', 'learning'];
       pages.forEach((p) => {
         byId('page-' + p).classList.toggle('active', p === name);
         byId('nav-' + p).classList.toggle('active', p === name);
       });
+      if (name === 'system') loadBarkLive().catch(() => {});
     };
 
     const api = async (path, options = {}) => {
@@ -1019,6 +1071,128 @@ String webAppPageHtml() {
       `).join('');
     };
 
+    const numberOr = (value, fallback = 0) => {
+      const n = Number(value);
+      return Number.isFinite(n) ? n : fallback;
+    };
+
+    const drawBarkLiveGraph = (bark) => {
+      const canvas = barkLiveGraphEl;
+      if (!canvas) return;
+      const ctx = canvas.getContext('2d');
+      if (!ctx) return;
+
+      const cssWidth = Math.max(280, canvas.clientWidth || 720);
+      const cssHeight = Math.max(120, canvas.clientHeight || 168);
+      const dpr = window.devicePixelRatio || 1;
+      if (canvas.width !== Math.round(cssWidth * dpr) || canvas.height !== Math.round(cssHeight * dpr)) {
+        canvas.width = Math.round(cssWidth * dpr);
+        canvas.height = Math.round(cssHeight * dpr);
+      }
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      ctx.clearRect(0, 0, cssWidth, cssHeight);
+
+      const padL = 34;
+      const padR = 10;
+      const padT = 12;
+      const padB = 24;
+      const graphW = Math.max(1, cssWidth - padL - padR);
+      const graphH = Math.max(1, cssHeight - padT - padB);
+      const yFor = (value) => padT + graphH - (Math.max(0, Math.min(adcMaxValue, value)) / adcMaxValue) * graphH;
+
+      ctx.fillStyle = '#f8fbff';
+      ctx.fillRect(0, 0, cssWidth, cssHeight);
+      ctx.strokeStyle = '#dbe5f0';
+      ctx.lineWidth = 1;
+      ctx.font = '11px Trebuchet MS, sans-serif';
+      ctx.fillStyle = '#5c6f84';
+      [0, 1024, 2048, 3072, 4095].forEach((tick) => {
+        const y = yFor(tick);
+        ctx.beginPath();
+        ctx.moveTo(padL, y);
+        ctx.lineTo(cssWidth - padR, y);
+        ctx.stroke();
+        ctx.fillText(String(tick), 4, y + 4);
+      });
+
+      const threshold = numberOr(bark.threshold, 0);
+      const mode = String(bark.mode || 'do');
+      if (mode !== 'do' && threshold > 0) {
+        const y = yFor(threshold);
+        ctx.strokeStyle = '#c77d00';
+        ctx.setLineDash([5, 4]);
+        ctx.beginPath();
+        ctx.moveTo(padL, y);
+        ctx.lineTo(cssWidth - padR, y);
+        ctx.stroke();
+        ctx.setLineDash([]);
+        ctx.fillStyle = '#7d4f00';
+        ctx.fillText('threshold', padL + 6, Math.max(padT + 10, y - 5));
+      }
+
+      const history = barkLiveHistory;
+      if (history.length > 1) {
+        ctx.strokeStyle = '#2a9d8f';
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        history.forEach((point, idx) => {
+          const x = padL + (idx / Math.max(1, barkLiveHistoryMax - 1)) * graphW;
+          const y = yFor(point.ao);
+          if (idx === 0) ctx.moveTo(x, y);
+          else ctx.lineTo(x, y);
+        });
+        ctx.stroke();
+      }
+
+      ctx.fillStyle = 'rgba(188, 71, 73, .35)';
+      history.forEach((point, idx) => {
+        if (!point.doActive) return;
+        const x = padL + (idx / Math.max(1, barkLiveHistoryMax - 1)) * graphW;
+        ctx.fillRect(x - 1, padT, 2, graphH);
+      });
+
+      const last = history[history.length - 1];
+      if (last) {
+        const x = padL + ((history.length - 1) / Math.max(1, barkLiveHistoryMax - 1)) * graphW;
+        const y = yFor(last.ao);
+        ctx.fillStyle = '#1d3557';
+        ctx.beginPath();
+        ctx.arc(x, y, 4, 0, Math.PI * 2);
+        ctx.fill();
+      }
+
+      ctx.fillStyle = '#5c6f84';
+      ctx.fillText('AO', padL, cssHeight - 7);
+      ctx.fillStyle = '#8b1a2b';
+      ctx.fillText('DO active', cssWidth - 72, cssHeight - 7);
+    };
+
+    const renderBarkLive = (bark, options = {}) => {
+      bark = bark || {};
+      const addPoint = options.addPoint !== false;
+      const ao = numberOr(bark.current_ao_level != null ? bark.current_ao_level : bark.last_ao_level, 0);
+      const doLevel = numberOr(bark.current_do_level != null ? bark.current_do_level : bark.last_do_level, -1);
+      const doActiveLevel = numberOr(bark.do_active_level, 0);
+      const doActive = bark.current_do_active != null ? !!bark.current_do_active : (doLevel === doActiveLevel);
+      const peak = numberOr(bark.last_window_peak, 0);
+      const doPct = numberOr(bark.last_do_active_pct, 0);
+      const mode = String(bark.mode || 'do').toUpperCase();
+      const enabled = !!bark.enabled;
+
+      barkLiveAoEl.textContent = String(ao);
+      barkLiveDoEl.textContent = doLevel >= 0 ? String(doLevel) : '-';
+      barkLivePeakEl.textContent = String(peak);
+      barkLiveDoPctEl.textContent = String(doPct) + '%';
+      barkLiveMetaEl.textContent = (enabled ? 'Enabled' : 'Disabled') + ' | mode ' + mode + ' | threshold ' + String(numberOr(bark.threshold, 0));
+      setChip(barkLiveTriggerEl, doActive ? 'DO active' : 'DO idle', doActive ? 'warn' : 'ok');
+
+      if (addPoint) {
+        barkLiveHistory.push({ ao, doActive });
+        while (barkLiveHistory.length > barkLiveHistoryMax) barkLiveHistory.shift();
+      }
+      drawBarkLiveGraph(bark);
+    };
+
     const renderStatusSummary = (ov, options = {}) => {
       const preserveEdits = options.preserveEdits !== false;
       metaEl.textContent = (ov.wifi_connected ? 'WiFi connected' : 'WiFi disconnected') + ' | IP: ' + (ov.ip || '-') + ' | SSID: ' + (ov.ssid || '-');
@@ -1097,6 +1271,7 @@ String webAppPageHtml() {
       setValueFromOverview('barkCooldownAdv', bark.cooldown_ms != null ? bark.cooldown_ms : 7000, preserveEdits);
       setValueFromOverview('barkCodeAdv', bark.code != null ? bark.code : 7654321, preserveEdits);
       setCheckedFromOverview('barkEmitRfAdv', !!bark.emit_rf, preserveEdits);
+      renderBarkLive(bark, { addPoint: false });
     };
 
     const ingestLearnCandidate = (text) => {
@@ -1201,6 +1376,18 @@ String webAppPageHtml() {
       } catch (e) {
       } finally {
         statusPollInFlight = false;
+      }
+    };
+
+    const loadBarkLive = async () => {
+      if (barkLivePollInFlight) return;
+      barkLivePollInFlight = true;
+      try {
+        const data = await api('/api/bark_live');
+        renderBarkLive(data.bark || {});
+      } catch (e) {
+      } finally {
+        barkLivePollInFlight = false;
       }
     };
 
@@ -1666,13 +1853,18 @@ String webAppPageHtml() {
     setInterval(() => loadStatusSummary().catch(() => {}), __WEB_STATUS_REFRESH_MS__);
     setInterval(() => loadOverview().catch(() => {}), __WEB_OVERVIEW_REFRESH_MS__);
     setInterval(pollLogs, __WEB_LOG_REFRESH_MS__);
+    setInterval(() => {
+      if (activePage === 'system') loadBarkLive().catch(() => {});
+    }, __WEB_BARK_LIVE_REFRESH_MS__);
   </script>
 </body>
 </html>
 )APP_HTML";
+  page.replace("__ADC_MAX_VALUE__", String(ADC_MAX_VALUE));
   page.replace("__WEB_STATUS_REFRESH_MS__", String(WEB_STATUS_REFRESH_MS));
   page.replace("__WEB_OVERVIEW_REFRESH_MS__", String(WEB_OVERVIEW_REFRESH_MS));
   page.replace("__WEB_LOG_REFRESH_MS__", String(WEB_LOG_REFRESH_MS));
+  page.replace("__WEB_BARK_LIVE_REFRESH_MS__", String(WEB_BARK_LIVE_REFRESH_MS));
   return page;
 }
 void sendWebJsonError(int code, const String& message) {
@@ -1834,6 +2026,17 @@ void fillOverviewJson(DynamicJsonDocument& doc) {
   fwEntry["name"] = "GDPR encrypted web API v1";
 
   JsonObject bark = ov.createNestedObject("bark");
+  fillBarkLiveJson(bark, false);
+}
+
+void fillBarkLiveJson(JsonObject bark, bool includeCurrentReadings) {
+  uint16_t currentAoLevel = barkLastAoLevel;
+  int currentDoLevel = barkLastDoLevel;
+  if (includeCurrentReadings) {
+    currentAoLevel = static_cast<uint16_t>(analogRead(BARK_MIC_PIN));
+    currentDoLevel = digitalRead(BARK_MIC_PIN);
+  }
+
   bark["enabled"] = barkConfig.enabled;
   bark["mode"] = barkModeText(barkConfig.inputMode);
   bark["do_active_level"] = barkConfig.doActiveLevel;
@@ -1848,6 +2051,10 @@ void fillOverviewJson(DynamicJsonDocument& doc) {
   bark["last_trigger_noise"] = barkLastTriggerNoiseLevel;
   bark["last_do_active_pct"] = barkLastDoActivePct;
   bark["last_trigger_do_active"] = barkLastTriggerDoActive;
+  bark["current_ao_level"] = currentAoLevel;
+  bark["current_do_level"] = currentDoLevel;
+  bark["current_do_active"] = (currentDoLevel == static_cast<int>(barkConfig.doActiveLevel));
+  bark["sample_ms"] = millis();
 }
 
 void setupWebRoutes() {
@@ -1928,6 +2135,18 @@ void setupWebRoutes() {
     sendWebJsonOk(doc);
     unsigned long took = millis() - t0;
     if (took > 80) Serial.printf("[WEB] /api/overview took %lums\n", took);
+  });
+
+  provisionServer.on("/api/bark_live", HTTP_GET, []() {
+    unsigned long t0 = millis();
+    if (!ensureWebApiAuthorized()) return;
+    DynamicJsonDocument doc(1536);
+    doc["ok"] = true;
+    JsonObject bark = doc.createNestedObject("bark");
+    fillBarkLiveJson(bark, true);
+    sendWebJsonOk(doc);
+    unsigned long took = millis() - t0;
+    if (took > 30) Serial.printf("[WEB] /api/bark_live took %lums\n", took);
   });
 
   provisionServer.on("/api/status", HTTP_GET, []() {

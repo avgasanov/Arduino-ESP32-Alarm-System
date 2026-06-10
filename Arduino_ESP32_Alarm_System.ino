@@ -48,6 +48,7 @@ static constexpr size_t WEB_OVERVIEW_DOC_CAPACITY = 24576;
 static constexpr uint16_t WEB_STATUS_REFRESH_MS = 2500;
 static constexpr uint16_t WEB_OVERVIEW_REFRESH_MS = 25000;
 static constexpr uint16_t WEB_LOG_REFRESH_MS = 1800;
+static constexpr uint16_t WEB_BARK_LIVE_REFRESH_MS = 750;
 static constexpr uint16_t ADC_MAX_VALUE = 4095;
 static constexpr uint16_t BARK_SAMPLE_INTERVAL_MS = 10;
 static constexpr uint16_t BARK_WINDOW_MS = 250;
