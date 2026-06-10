@@ -392,6 +392,11 @@ String webAppPageHtml() {
     .nowrap { white-space:nowrap; }
     #flash { position:fixed; right:10px; bottom:10px; max-width:90vw; padding:10px 12px; border-radius:10px; border:1px solid #b9d8c3; background:#e7f5eb; color:#1b5e34; display:none; z-index:999; font-size:13px; }
     #flash.err { background:#fdebec; border-color:#efb8c1; color:#8b1a2b; }
+    #flash.busy { background:#eaf2ff; border-color:#b6cceb; color:#1d3557; display:flex; align-items:center; gap:8px; }
+    #flash.busy:before { content:""; width:13px; height:13px; border:2px solid #b6cceb; border-top-color:#1d3557; border-radius:50%; animation:spin .8s linear infinite; flex:0 0 auto; }
+    button.busy { opacity:.8; cursor:wait; }
+    button:disabled { opacity:.65; cursor:not-allowed; }
+    @keyframes spin { to { transform:rotate(360deg); } }
     @media (min-width: 900px) {
       .header { grid-template-columns: 1fr auto; align-items:center; }
       .grid { grid-template-columns: 1fr 1fr; }
@@ -710,9 +715,30 @@ String webAppPageHtml() {
     let logsPollInFlight = false;
     let overviewLoadInFlight = false;
     let statusPollInFlight = false;
+    let flashTimer = null;
 
     const byId = (id) => document.getElementById(id);
     const editableSelector = 'input, select, textarea';
+    const actionProgressLabels = {
+      listen_all_set: 'Updating listen-all...',
+      listen_saved_set: 'Updating saved mode...',
+      bark_set: 'Updating bark detector...',
+      group_save: 'Saving group...',
+      group_reset: 'Resetting group...',
+      sensor_upsert: 'Saving sensor...',
+      sensor_remove: 'Removing sensor...',
+      remote_upsert: 'Saving remote...',
+      remote_remove: 'Removing remote...',
+      remote_send: 'Sending RF command...',
+      wol: 'Sending wake packet...',
+      server_set: 'Saving server...',
+      server_clear: 'Clearing server...',
+      sms_config_set: 'Saving SMS settings...',
+      sms_test: 'Sending SMS test...',
+      bark_config_set: 'Saving bark settings...',
+      bark_test: 'Running bark test...',
+      reset_all: 'Resetting data...'
+    };
     const statusEl = byId('statusText');
     const logsEl = byId('logs');
     const learnRawEl = byId('learnRaw');
@@ -761,11 +787,20 @@ String webAppPageHtml() {
         .replace(/'/g, '&#39;');
     };
 
-    const flash = (msg, isErr = false) => {
+    const flash = (msg, isErr = false, options = {}) => {
+      if (flashTimer) {
+        clearTimeout(flashTimer);
+        flashTimer = null;
+      }
       flashEl.textContent = msg;
-      flashEl.className = isErr ? 'err' : '';
+      flashEl.className = options.busy ? 'busy' : (isErr ? 'err' : '');
       flashEl.style.display = 'block';
-      setTimeout(() => { flashEl.style.display = 'none'; }, 2600);
+      if (!options.sticky) {
+        flashTimer = setTimeout(() => {
+          flashEl.style.display = 'none';
+          flashTimer = null;
+        }, options.ms || 2600);
+      }
     };
 
     const setChip = (el, text, cls = '') => {
@@ -805,6 +840,38 @@ String webAppPageHtml() {
     const hasEditedField = (ids, preserveEdits) => {
       return !!(preserveEdits && ids.some((id) => shouldPreserveField(byId(id), true)));
     };
+    const activeActionButton = () => {
+      const el = document.activeElement;
+      if (!el || !el.closest) return null;
+      return el.closest('button');
+    };
+    const actionProgressText = (action, explicit) => {
+      if (typeof explicit === 'string' && explicit.length) return explicit;
+      if (explicit === false) return '';
+      return actionProgressLabels[action] || 'Working...';
+    };
+    const beginActionProgress = (button, text) => {
+      if (!text) return () => {};
+      flash(text, false, { busy: true, sticky: true });
+      if (!button) return () => {};
+      const previousDisabled = button.disabled;
+      const previousTitle = button.getAttribute('title');
+      const hadTitle = button.hasAttribute('title');
+      const previousBusy = button.getAttribute('aria-busy');
+      const hadBusy = button.hasAttribute('aria-busy');
+      button.disabled = true;
+      button.setAttribute('aria-busy', 'true');
+      button.setAttribute('title', text);
+      button.classList.add('busy');
+      return () => {
+        button.disabled = previousDisabled;
+        if (hadBusy) button.setAttribute('aria-busy', previousBusy);
+        else button.removeAttribute('aria-busy');
+        if (hadTitle) button.setAttribute('title', previousTitle);
+        else button.removeAttribute('title');
+        button.classList.remove('busy');
+      };
+    };
     const smsFieldIds = [
       'smsRouterId', 'smsFirmwareId', 'smsHost', 'smsPhoneAdd', 'smsPassword',
       'smsEnabled', 'smsSavedMode', 'smsGroupMode', 'smsSensorMode'
@@ -837,22 +904,28 @@ String webAppPageHtml() {
     const postAction = async (action, fields = {}, options = {}) => {
       const silent = !!options.silent;
       const preserveEdits = options.preserveEdits !== false;
+      const progressText = actionProgressText(action, options.progress);
+      const restoreProgress = beginActionProgress(options.button || activeActionButton(), progressText);
       const body = new URLSearchParams();
       body.set('action', action);
       Object.keys(fields).forEach((k) => {
         const v = fields[k];
         if (v !== undefined && v !== null) body.set(k, String(v));
       });
-      const data = await api('/api/action', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-        body: body.toString()
-      });
-      if (data.reply && !silent) flash(data.reply, false);
-      if (Array.isArray(options.clearDirtyIds)) clearDirtyIds(options.clearDirtyIds);
-      if (options.clearSmsPhonesDirty) smsPhonesDirty = false;
-      if (data.overview && !options.skipOverviewRender) renderOverview(data.overview, { preserveEdits });
-      return data;
+      try {
+        const data = await api('/api/action', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+          body: body.toString()
+        });
+        if (data.reply && !silent) flash(data.reply, false);
+        if (Array.isArray(options.clearDirtyIds)) clearDirtyIds(options.clearDirtyIds);
+        if (options.clearSmsPhonesDirty) smsPhonesDirty = false;
+        if (data.overview && !options.skipOverviewRender) renderOverview(data.overview, { preserveEdits });
+        return data;
+      } finally {
+        restoreProgress();
+      }
     };
 
     const renderGroups = (groupsAll) => {
@@ -1446,28 +1519,36 @@ String webAppPageHtml() {
       try { await postAction('bark_test'); } catch (e) { flash(e.message, true); }
     };
 
-    const fetchConfigExport = async () => {
-      const res = await fetch('/api/config_export', { method: 'GET', cache: 'no-store' });
-      if (res.status === 401) {
-        location.href = '/login';
-        throw new Error('Unauthorized');
-      }
-      const text = await res.text();
-      if (!res.ok) {
-        let errMsg = text || 'Config export failed';
-        try {
-          const errObj = JSON.parse(text);
-          if (errObj && errObj.error) errMsg = errObj.error;
-        } catch (e) {
+    const fetchConfigExport = async (options = {}) => {
+      const restoreProgress = beginActionProgress(
+        options.button || activeActionButton(),
+        options.progress || 'Exporting config...'
+      );
+      try {
+        const res = await fetch('/api/config_export', { method: 'GET', cache: 'no-store' });
+        if (res.status === 401) {
+          location.href = '/login';
+          throw new Error('Unauthorized');
         }
-        throw new Error(errMsg);
+        const text = await res.text();
+        if (!res.ok) {
+          let errMsg = text || 'Config export failed';
+          try {
+            const errObj = JSON.parse(text);
+            if (errObj && errObj.error) errMsg = errObj.error;
+          } catch (e) {
+          }
+          throw new Error(errMsg);
+        }
+        return text;
+      } finally {
+        restoreProgress();
       }
-      return text;
     };
 
     const exportConfigToBox = async () => {
       try {
-        const payload = await fetchConfigExport();
+        const payload = await fetchConfigExport({ progress: 'Exporting config...' });
         byId('configBlob').value = payload;
         flash('Config exported to text box', false);
       } catch (e) {
@@ -1477,7 +1558,7 @@ String webAppPageHtml() {
 
     const downloadConfigExport = async () => {
       try {
-        const payload = await fetchConfigExport();
+        const payload = await fetchConfigExport({ progress: 'Preparing download...' });
         const blob = new Blob([payload], { type: 'application/json' });
         const url = URL.createObjectURL(blob);
         const a = document.createElement('a');
@@ -1498,6 +1579,7 @@ String webAppPageHtml() {
       if (!payload) return flash('Paste config JSON first', true);
       if (!confirm('Import config now? This can reset runtime sessions.')) return;
 
+      const restoreProgress = beginActionProgress(activeActionButton(), 'Importing config...');
       try {
         const res = await fetch('/api/config_import', {
           method: 'POST',
@@ -1515,6 +1597,8 @@ String webAppPageHtml() {
         flash(data.reply || 'Config import applied', false);
       } catch (e) {
         flash(e.message, true);
+      } finally {
+        restoreProgress();
       }
     };
 
@@ -1537,7 +1621,9 @@ String webAppPageHtml() {
     };
 
     byId('logoutBtn').addEventListener('click', async () => {
+      const restoreProgress = beginActionProgress(byId('logoutBtn'), 'Signing out...');
       try { await api('/api/logout', { method: 'POST' }); } catch (e) {}
+      finally { restoreProgress(); }
       location.href = '/login';
     });
 
